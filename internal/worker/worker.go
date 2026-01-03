@@ -9,6 +9,7 @@ import (
 	pb "engram/proto/v1"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -34,15 +35,16 @@ func DefaultConfig() WorkerConfig {
 }
 
 type Worker struct {
-	store    store.DurableStore
-	llm      llm.LLM
-	sandbox  sandbox.Sandbox
-	workerID string
-	config   WorkerConfig
-	stopCh   chan struct{}
+	store     store.DurableStore
+	llm       llm.LLM
+	sandbox   sandbox.Sandbox
+	workerID  string
+	toolsPath string
+	config    WorkerConfig
+	stopCh    chan struct{}
 }
 
-func NewWorker(s store.DurableStore, l llm.LLM, id string, cfg ...WorkerConfig) *Worker {
+func NewWorker(s store.DurableStore, l llm.LLM, id string, toolsPath string, cfg ...WorkerConfig) *Worker {
 	config := DefaultConfig()
 	if len(cfg) > 0 {
 		config = cfg[0]
@@ -50,12 +52,13 @@ func NewWorker(s store.DurableStore, l llm.LLM, id string, cfg ...WorkerConfig) 
 
 	sb, _ := sandbox.NewWasmSandbox(context.Background())
 	return &Worker{
-		store:    s,
-		llm:      l,
-		sandbox:  sb,
-		workerID: id,
-		config:   config,
-		stopCh:   make(chan struct{}),
+		store:     s,
+		llm:       l,
+		sandbox:   sb,
+		workerID:  id,
+		toolsPath: toolsPath,
+		config:    config,
+		stopCh:    make(chan struct{}),
 	}
 }
 
@@ -294,11 +297,21 @@ func (w *Worker) executeToolCall(ctx context.Context, meta *ipb.AgentMetadata, t
 
 	fmt.Printf("Worker [%s]: Executing tool %s for %s\n", w.workerID, tc.Name, agentID)
 
-	result, err := w.sandbox.Execute(ctx, nil, []string{tc.Name, tc.Input})
+	// Load WASM binary from toolsPath
+	wasmPath := fmt.Sprintf("%s/%s.wasm", w.toolsPath, tc.Name)
+	wasmBinary, err := os.ReadFile(wasmPath)
+	if err != nil {
+		fmt.Printf("Worker [%s]: Error reading tool binary %s: %v\n", w.workerID, wasmPath, err)
+		return w.appendToolResult(ctx, agentID, tc.CallId, fmt.Sprintf("Error: Tool binary not found for %s", tc.Name), true)
+	}
+
+	result, err := w.sandbox.Execute(ctx, wasmBinary, []string{tc.Name, tc.Input})
 	isError := err != nil
 	if isError {
 		result = err.Error()
 	}
+
+	fmt.Printf("Worker [%s]: Sandboxed execution result for %s: %q (err=%v)\n", w.workerID, tc.Name, result, err)
 
 	// Cache result for idempotency
 	w.store.SetToolResult(ctx, tc.CallId, result)

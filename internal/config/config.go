@@ -11,6 +11,7 @@ type Config struct {
 	OllamaURL string
 	RedisURL  string
 	StoreType string // "badger" or "redis"
+	ToolsPath string
 }
 
 func Load() *Config {
@@ -20,6 +21,7 @@ func Load() *Config {
 		OllamaURL: getEnv("OLLAMA_URL", "http://localhost:11434"),
 		RedisURL:  getEnv("REDIS_URL", "localhost:6379"),
 		StoreType: getEnv("STORE_TYPE", "badger"),
+		ToolsPath: getEnv("TOOLS_PATH", "./tools"),
 	}
 }
 

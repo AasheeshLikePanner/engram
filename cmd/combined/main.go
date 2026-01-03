@@ -44,7 +44,7 @@ func main() {
 
 	// 3. Worker (Using MockLLM for verification)
 	llmClient := &llm.MockLLM{}
-	w := worker.NewWorker(s, llmClient, "combined-worker")
+	w := worker.NewWorker(s, llmClient, "combined-worker", cfg.ToolsPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

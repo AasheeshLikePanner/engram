@@ -313,26 +313,10 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 }
 
 func (a *Agent) SetAgentStatus(ctx context.Context, req *pb.SetAgentStatusRequest) (*pb.SetAgentStatusResponse, error) {
-	agent, err := a.store.GetAgent(ctx, req.AgentId)
-	if err != nil {
+	if err := a.store.UpdateStatus(ctx, req.AgentId, req.Status); err != nil {
 		return nil, err
 	}
-
-	now := timestamppb.Now()
-	agent.Status = req.Status
-	agent.UpdatedAt = now
-	if err := a.store.SetAgent(ctx, req.AgentId, agent); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to update public agent: %v", err)
-	}
-
-	// Also update internal metadata status
-	if meta, err := a.store.GetMetadata(ctx, req.AgentId); err == nil {
-		meta.Status = req.Status
-		meta.UpdatedAt = now
-		a.store.SetMetadata(ctx, req.AgentId, meta)
-	}
-
-	return &pb.SetAgentStatusResponse{Status: agent.Status}, nil
+	return &pb.SetAgentStatusResponse{Status: req.Status}, nil
 }
 
 func (a *Agent) ControlAgent(ctx context.Context, req *pb.ControlAgentRequest) (*pb.ControlAgentResponse, error) {

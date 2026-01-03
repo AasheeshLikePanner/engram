@@ -3,12 +3,13 @@ package llm
 import (
 	"bytes"
 	"context"
-	"engram/internal/proto"
 	"encoding/json"
+	"engram/internal/proto"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type Ollama struct {
@@ -76,21 +77,23 @@ func (o *Ollama) buildPrompt(events []*proto.Event) string {
 	sb.WriteString("You are a helpful AI assistant. This is the conversation history:\n")
 
 	for _, event := range events {
+		ts := event.Timestamp.AsTime().Format("2006-01-02 15:04:05")
 		switch p := event.Payload.(type) {
 		case *proto.Event_Created:
-			sb.WriteString(fmt.Sprintf("The user gave you this goal: %s\n", p.Created.GetGoal()))
+			sb.WriteString(fmt.Sprintf("[%s] SYSTEM: Goal: %s\n", ts, p.Created.GetGoal()))
 		case *proto.Event_UserMessage:
-			sb.WriteString(fmt.Sprintf("User: %s\n", p.UserMessage.GetContent()))
+			sb.WriteString(fmt.Sprintf("[%s] User: %s\n", ts, p.UserMessage.GetContent()))
 		case *proto.Event_LlmResponse:
-			sb.WriteString(fmt.Sprintf("Assistant: %s\n", p.LlmResponse.GetContent()))
+			sb.WriteString(fmt.Sprintf("[%s] Assistant: %s\n", ts, p.LlmResponse.GetContent()))
 		case *proto.Event_Edited:
-			sb.WriteString(fmt.Sprintf("SYSTEM INTERVENTION: %s\n", p.Edited.Description))
+			sb.WriteString(fmt.Sprintf("[%s] SYSTEM INTERVENTION: %s\n", ts, p.Edited.Description))
 		case *proto.Event_Paused:
-			sb.WriteString(fmt.Sprintf("SYSTEM: Conversation was paused. Reason: %s\n", p.Paused.Reason))
+			sb.WriteString(fmt.Sprintf("[%s] SYSTEM: Paused. Reason: %s\n", ts, p.Paused.Reason))
 		case *proto.Event_Resumed:
-			sb.WriteString("SYSTEM: Conversation was resumed.\n")
+			sb.WriteString(fmt.Sprintf("[%s] SYSTEM: Resumed.\n", ts))
 		}
 	}
+	sb.WriteString(fmt.Sprintf("\nCurrent Time: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	sb.WriteString("Assistant: ")
 	return sb.String()
 }

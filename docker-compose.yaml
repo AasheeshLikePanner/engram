@@ -6,10 +6,12 @@ services:
     environment:
       - STORE_TYPE=redis
       - REDIS_URL=redis:6379
+      - TOOLS_PATH=/app/tools
     depends_on:
       - redis
     volumes:
       - ./data:/app/data
+      - ./tools:/app/tools
 
   redis:
     image: redis:7-alpine

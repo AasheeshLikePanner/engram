@@ -38,7 +38,7 @@ func main() {
 
 	// llmClient := llm.NewOllama(cfg.OllamaURL)
 	llmClient := &llm.MockLLM{}
-	w := worker.NewWorker(db, llmClient, hostname)
+	w := worker.NewWorker(db, llmClient, hostname, cfg.ToolsPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
