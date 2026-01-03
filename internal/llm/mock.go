@@ -22,6 +22,8 @@ func (m *MockLLM) Generate(ctx context.Context, model string, events []*ipb.Even
 			if strings.Contains(lastUserMsg, "It is exactly") {
 				saidTime = lastUserMsg
 			}
+		case *ipb.Event_ToolResult:
+			hasIntervention = true
 		case *ipb.Event_Edited:
 			hasIntervention = true
 		}
@@ -32,7 +34,7 @@ func (m *MockLLM) Generate(ctx context.Context, model string, events []*ipb.Even
 	}
 
 	if strings.Contains(lastUserMsg, "[CLOCK_TOOL]") && !hasIntervention {
-		return "[TOOL_CALL] I need to check the time.", nil
+		return "[TOOL_CALL:clock:{}] I need to check the time.", nil
 	}
 
 	if hasIntervention {

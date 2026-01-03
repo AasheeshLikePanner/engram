@@ -249,8 +249,31 @@ func (w *Worker) ExecuteStep(ctx context.Context, meta *ipb.AgentMetadata) error
 	var responseEvent *ipb.Event
 	newStatus := "waiting_for_input"
 
-	if strings.HasPrefix(llmResponse, "[TOOL_CALL]") {
-		fmt.Printf("Worker [%s]: Tool call detected for %s. Pausing for HITL.\n", w.workerID, agentID)
+	if strings.HasPrefix(llmResponse, "[TOOL_CALL:") {
+		parts := strings.SplitN(strings.TrimPrefix(llmResponse, "[TOOL_CALL:"), "]", 2)
+		toolParts := strings.SplitN(parts[0], ":", 2)
+		toolName := toolParts[0]
+		toolInput := "{}"
+		if len(toolParts) > 1 {
+			toolInput = toolParts[1]
+		}
+
+		fmt.Printf("Worker [%s]: Tool call detected for %s (%s). Continuing for execution.\n", w.workerID, agentID, toolName)
+		responseEvent = &ipb.Event{
+			Sequence:  nextSeq,
+			Timestamp: timestamppb.Now(),
+			Payload: &ipb.Event_ToolCall{
+				ToolCall: &ipb.ToolCall{
+					Name:   toolName,
+					Input:  toolInput,
+					CallId: uuid.New().String(),
+				},
+			},
+		}
+		newStatus = "waiting_for_step"
+	} else if strings.HasPrefix(llmResponse, "[TOOL_CALL]") {
+		// Legacy/Simple fallback
+		fmt.Printf("Worker [%s]: Simple tool call detected for %s. Continuing for execution.\n", w.workerID, agentID)
 		responseEvent = &ipb.Event{
 			Sequence:  nextSeq,
 			Timestamp: timestamppb.Now(),
@@ -262,7 +285,7 @@ func (w *Worker) ExecuteStep(ctx context.Context, meta *ipb.AgentMetadata) error
 				},
 			},
 		}
-		newStatus = "paused"
+		newStatus = "waiting_for_step"
 	} else {
 		responseEvent = &ipb.Event{
 			Sequence:  nextSeq,

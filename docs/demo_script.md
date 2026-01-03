@@ -54,6 +54,17 @@ This demo is designed to show **Engram's** unique "indestructibility" and its se
 ---
 
 ## 💡 Pro-Tips for the Video:
-1. **Show the Logs**: Keep a terminal with Docker logs visible. People love seeing the "Event Log Replay" messages.
-2. **Speed**: Use a local model (Ollama) or a fast API to keep the TTFT sub-second (~0.7ms) to show off the Go engine's speed.
-3. **The "Hand-Off"**: If you have two workers, show one worker picking up the agent from another worker that died.
+
+### Visual Strategy: Show, Don't Write
+For a professional demo, **don't write the code live**. It slows down the pace and risks typos.
+- **The Staging**: Have the Python script (`agent_demo.py`) already open in your editor.
+- **The Highlight**: Highlight the 3-4 lines that matter (the `stub.Chat` stream) and say: *"As you can see, the SDK is just standard gRPC, making it incredibly lightweight."*
+- **The Speed**: Use `time.time()` markers in your terminal to show that recovery takes practically zero overhead.
+
+### Key Visuals to Include:
+1. **The Logs**: Keep a terminal with Docker logs visible. People love seeing the "Event Log Replay" messages.
+2. **The Terminal Split**: Split your screen: Top is the Agent output, Bottom is the Engine logs.
+3. **The Reveal**: When the agent recovers, use a high-contrast terminal theme so the "Continued" text is obvious.
+
+### The "Hand-Off" (Advanced)
+If you have two workers, show one worker picking up the agent from another worker that died. This proves the shared state via Redis.
