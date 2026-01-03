@@ -1,0 +1,240 @@
+syntax = "proto3";
+
+package engram.api.v1;
+
+option go_package = "engram/proto/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/empty.proto";
+
+service AgentService {
+  // Create a new durable agent
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+
+  // Get current agent state and metadata
+  rpc GetAgent(GetAgentRequest) returns (Agent);
+
+  // List all agents (with filters)
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+
+  // Delete agent (with safety)
+  rpc DeleteAgent(DeleteAgentRequest) returns (google.protobuf.Empty);
+
+  // Control commands (pause, resume, etc.)
+  rpc ControlAgent(ControlAgentRequest) returns (ControlAgentResponse);
+
+  // Primary real-time bidirectional interaction stream
+  rpc Chat(stream ClientMessage) returns (stream ServerMessage);
+
+  // Optional: replay historical stream from a point in time
+  rpc Replay(ReplayRequest) returns (stream ServerMessage);
+
+  // Set agent status directly (for worker/internal use)
+  rpc SetAgentStatus(SetAgentStatusRequest) returns (SetAgentStatusResponse);
+}
+
+message SetAgentStatusRequest {
+  string agent_id = 1;
+  string status = 2;
+}
+
+message SetAgentStatusResponse {
+  string status = 1;
+}
+
+// ====================== CREATE ======================
+
+message CreateAgentRequest {
+  string goal = 1;                          // Main objective
+  string model = 2;                          // Ollama model, e.g. "llama3.1:70b"
+  map<string, string> metadata = 3;         // User-defined labels
+  repeated Tool tools = 4;                   // Allowed tools for this agent
+  string system_prompt = 5;                 // Optional override
+  AgentConfig config = 6;                    // Advanced tuning
+}
+
+message CreateAgentResponse {
+  string agent_id = 1;
+  Agent agent = 2;
+}
+
+message AgentConfig {
+  int32 max_steps = 1;                       // Safety limit
+  google.protobuf.Duration max_duration = 2;
+  float temperature = 3;
+  int32 max_context_tokens = 4;
+  bool enable_thinking = 5;                  // Stream thoughts
+  bool enable_observation = 6;
+}
+
+// ====================== CORE MESSAGES ======================
+
+message Agent {
+  string agent_id = 1;
+  string goal = 2;
+  string status = 3;                          // running, paused, completed, failed, deleted
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  map<string, string> metadata = 6;
+  AgentStats stats = 7;
+}
+
+message AgentStats {
+  int32 total_steps = 1;
+  int32 tool_calls = 2;
+  google.protobuf.Duration total_duration = 3;
+  int32 tokens_used = 4;
+}
+
+// ====================== BIDIRECTIONAL STREAM ======================
+
+message ClientMessage {
+  // Metadata (sent on connect)
+  string agent_id = 1;                       // Required on first message or via context
+
+  google.protobuf.Timestamp client_timestamp = 10;
+
+  oneof payload {
+    UserInput user_input = 2;
+    Pause pause = 3;
+    Resume resume = 4;
+    Edit edit = 5;
+    Cancel cancel = 6;
+  }
+}
+
+message UserInput {
+  string content = 1;
+  repeated Attachment attachments = 2;      // Images, files (future)
+}
+
+message Attachment {
+  string name = 1;
+  string mime_type = 2;
+  bytes data = 3;                            // Or URL later
+}
+
+message Pause { string reason = 1; }
+message Resume {}
+message Cancel {}
+message Retry {}
+
+message Edit {
+  // Flexible patch format (JSONPatch or custom)
+  google.protobuf.Struct patch = 1;
+  string description = 2;
+}
+
+// Server → Client stream
+message ServerMessage {
+  string agent_id = 1;
+  int64 sequence_id = 2;                      // Monotonic per agent
+  google.protobuf.Timestamp timestamp = 3;
+
+  oneof payload {
+    Thought thought = 10;
+    Observation observation = 11;
+    ToolCall tool_call = 12;
+    ToolResult tool_result = 13;
+    TextOutput text = 14;
+    FinalAnswer final_answer = 15;
+    Error error = 16;
+    StatusUpdate status = 17;
+    Heartbeat heartbeat = 18;
+  }
+}
+
+message Thought {
+  string content = 1;
+}
+
+message Observation {
+  string content = 1;
+}
+
+message ToolCall {
+  string tool_name = 1;
+  string input_json = 2;                     // Structured later if needed
+  string call_id = 3;                         // For matching result
+}
+
+message ToolResult {
+  string call_id = 1;
+  string output = 2;
+  bool is_error = 3;
+  string error_message = 4;
+}
+
+message TextOutput {
+  string content = 1;
+}
+
+message FinalAnswer {
+  string content = 1;
+  google.protobuf.Struct structured = 2;     // Optional JSON output
+}
+
+message Error {
+  string code = 1;                            // e.g. "RATE_LIMIT", "TOOL_FAILED"
+  string message = 2;
+}
+
+message StatusUpdate {
+  string status = 1;
+  string message = 2;
+}
+
+message Heartbeat {}  // Keep connection alive
+
+// ====================== OTHER RPCS ======================
+
+message GetAgentRequest {
+  string agent_id = 1;
+}
+
+message ListAgentsRequest {
+  string status_filter = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+  string next_page_token = 2;
+}
+
+message DeleteAgentRequest {
+  string agent_id = 1;
+  bool force = 2;  // Delete even if running
+}
+
+message ControlAgentRequest {
+  string agent_id = 1;
+  oneof command {
+    Pause pause = 2;
+    Resume resume = 3;
+    Cancel cancel = 4;
+    Retry retry = 5;
+  }
+}
+
+message ControlAgentResponse {
+  string status = 1;
+}
+
+message ReplayRequest {
+  string agent_id = 1;
+  int64 from_sequence = 2;  // Replay from this point
+  bool include_history = 3;
+}
+
+// ====================== TOOL DEFINITION (Future-Proof) ======================
+
+message Tool {
+  string name = 1;
+  string description = 2;
+  google.protobuf.Struct parameters_schema = 3;  // JSON schema
+  bool requires_confirmation = 4;
+}

@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package engram.internal;
+
+option go_package = "engram/internal/proto";
+
+import "google/protobuf/timestamp.proto";
+
+import "google/protobuf/struct.proto";
+
+message AgentMetadata {
+  string agent_id = 1;
+  string status = 2; 
+  string running_on_worker = 3;
+  google.protobuf.Timestamp step_started_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  uint64 head_sequence = 6;
+  string current_model = 7;
+}
+
+message Event {
+  uint64 sequence = 1;
+  google.protobuf.Timestamp timestamp = 2;
+
+  oneof payload {
+    AgentCreated created = 10;
+    UserMessage user_message = 11;
+    AgentThought thought = 12;
+    LLMResponse llm_response = 13;      
+    ToolCall tool_call = 14;
+    ToolResult tool_result = 15;
+    Observation observation = 16;
+    FinalAnswer final_answer = 17;
+    AgentPaused paused = 18;
+    AgentResumed resumed = 19;
+    AgentEdited edited = 20;
+    Error error = 21;
+  }
+}
+
+message AgentCreated { string goal = 1; string model = 2; }
+message UserMessage { string content = 1; }
+message AgentThought { string content = 1; }
+message LLMResponse { string content = 1; }
+message ToolCall { string name = 1; string input = 2; string call_id = 3; }
+message ToolResult { string call_id = 1; string output = 2; bool is_error = 3; }
+message Observation { string content = 1; }
+message FinalAnswer { string content = 1; }
+message AgentPaused { string reason = 1; }
+message AgentResumed {}
+message AgentEdited {
+  google.protobuf.Struct patch = 1;
+  string description = 2;
+}
+message Error { string message = 1; }
