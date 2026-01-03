@@ -10,27 +10,18 @@ In 99% of frameworks today, that agent is gone. The context is vaporized. You ha
 
 We built **Engram** because we believe agents shouldn't be fragile scripts. They should be **Indestructible Processes**.
 
-## 🛡️ The Mid-Step Miracle
-
+## 🛡️ The Mid-Step Miracle: Temporal Recovery
 Most "memory" in AI is just a database table of chat logs. That’s not enough. 
 
-Engram uses **Event Sourcing** at its core. Every single thought,Every tool call, every observation, and even every *partial* LLM response is an immutable event in a Redis log.
-
-Because of this, Engram handles crashes like a pro:
-1. **The Crash**: A worker node goes down mid-thought.
-2. **The Detection**: Other workers see the missed heartbeat and "claim" the stranded agent.
-3. **The Replay**: The new worker downloads the event log. It doesn't just see "the history"—it sees the exact state the agent was in.
-4. **The Continuation**: The agent resumes. It doesn't ask "Where was I?" It simple *continues* from the exact phase it was in.
-
-**This is the "Save Game" for AI.**
+Engram uses **Event Sourcing** with **Temporal Context**. Every thought, tool call, and observation is an immutable event with a nanosecond-precision timestamp. When an agent is replayed after a crash, it doesn't just see what happened—it sees *when* it happened, relative to the *now*. This prevents "temporal amnesia" where agents lose their sense of time during recovery loops.
 
 ## 🏗️ The Sandbox: Running Agents at "Level 0"
+Safe execution of agent-generated code remains the "Holy Grail" of AI security. 
 
-We didn't just want agents to be durable; we wanted them to be **safe**. 
-
-When an Engram agent calls a tool or executes code, it isn't running on your host machine. We’ve integrated a **WASM-based Sandbox** (using `wazero`). 
-
-Your agents live in a secure, isolated environment with zero access to your filesystem or network unless you explicitly grant it. This is containerization at the function level—allowing you to run hundreds of untrusted agents on a single node without breaking a sweat.
+When an Engram agent calls a tool, it initiates a **WASM-based Sandbox** (powered by `wazero`). We call this "Containerization at the Function Level."
+- **CPU & Memory Bounds**: Strictly limit how much resource a tool can consume.
+- **Filesystem Isolation**: Tools have zero access to the host machine.
+- **Dynamically Pluggable**: Need a calculator? A web-scraper? A Python interpreter? Just drop the `.wasm` binary into the engine's `tools/` folder.
 
 ## 🏎️ Built for the "Token-per-Second" Era
 
