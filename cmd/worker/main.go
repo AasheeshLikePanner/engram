@@ -6,28 +6,36 @@ import (
 	"engram/internal/llm"
 	"engram/internal/store"
 	"engram/internal/worker"
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("Worker failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg := config.Load()
 
 	var db store.DurableStore
 	var err error
 
 	if cfg.StoreType == "redis" {
-		log.Printf("Initializing Redis store at %s", cfg.RedisURL)
+		slog.Info("Initializing Redis store", "url", cfg.RedisURL)
 		db, err = store.NewRedisStore(cfg.RedisURL)
 	} else {
-		log.Printf("Initializing Badger store at %s", cfg.DBPath)
+		slog.Info("Initializing Badger store", "path", cfg.DBPath)
 		db, err = store.NewBadgerStore(cfg.DBPath)
 	}
 
 	if err != nil {
-		log.Fatalf("failed to initialize store: %v", err)
+		return fmt.Errorf("failed to initialize store: %w", err)
 	}
 	defer db.Close()
 
@@ -36,8 +44,15 @@ func main() {
 		hostname = "worker-1"
 	}
 
-	// llmClient := llm.NewOllama(cfg.OllamaURL)
-	llmClient := &llm.MockLLM{}
+	var llmClient llm.LLM
+	if cfg.LLMProvider == "openai" {
+		slog.Info("Using OpenAI-compatible LLM provider", "url", cfg.LLMBaseURL)
+		llmClient = llm.NewOpenAI(cfg.LLMAPIKey, cfg.LLMBaseURL)
+	} else {
+		slog.Info("Using Ollama LLM provider", "url", cfg.OllamaURL)
+		llmClient = llm.NewOllama(cfg.OllamaURL)
+	}
+	
 	w := worker.NewWorker(db, llmClient, hostname, cfg.ToolsPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -46,11 +61,20 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
+	errChan := make(chan error, 1)
 	go func() {
 		if err := w.Start(ctx); err != nil && err != context.Canceled {
-			log.Printf("Worker error: %v", err)
+			errChan <- err
 		}
 	}()
 
-	<-sigChan
+	select {
+	case sig := <-sigChan:
+		slog.Info("Received signal, shutting down", "signal", sig)
+		cancel()
+	case err := <-errChan:
+		return fmt.Errorf("worker error: %w", err)
+	}
+
+	return nil
 }

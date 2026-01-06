@@ -6,7 +6,8 @@ import (
 	"engram/internal/store"
 	pb "engram/proto/v1"
 	"io"
-	"log"
+	"log/slog"
+	"sync"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -17,15 +18,15 @@ import (
 
 type Agent struct {
 	pb.UnimplementedAgentServiceServer
-	store store.DurableStore
+	store  store.DurableStore
+	logger *slog.Logger
 }
 
 func NewAgent(store store.DurableStore) *Agent {
-	return &Agent{store: store}
-}
-
-func agentKey(id string) string {
-	return "agent:v1:" + id
+	return &Agent{
+		store:  store,
+		logger: slog.Default().With("service", "agent"),
+	}
 }
 
 func (a *Agent) CreateAgent(ctx context.Context, req *pb.CreateAgentRequest) (*pb.CreateAgentResponse, error) {
@@ -38,6 +39,8 @@ func (a *Agent) CreateAgent(ctx context.Context, req *pb.CreateAgentRequest) (*p
 
 	agentID := uuid.New().String()
 	now := timestamppb.Now()
+
+	a.logger.Info("Creating agent", "agent_id", agentID, "model", req.Model)
 
 	createdEvent := &ipb.Event{
 		Sequence:  1,
@@ -130,22 +133,73 @@ func (a *Agent) DeleteAgent(ctx context.Context, req *pb.DeleteAgentRequest) (*e
 	return &emptypb.Empty{}, nil
 }
 
+func eventToServiceMessage(aid string, event *ipb.Event) *pb.ServerMessage {
+	serverMsg := &pb.ServerMessage{
+		AgentId:    aid,
+		SequenceId: int64(event.Sequence),
+		Timestamp:  event.Timestamp,
+	}
+
+	switch p := event.Payload.(type) {
+	case *ipb.Event_UserMessage:
+		serverMsg.Payload = &pb.ServerMessage_Status{
+			Status: &pb.StatusUpdate{
+				Status:  "user_input",
+				Message: p.UserMessage.Content,
+			},
+		}
+	case *ipb.Event_Thought:
+		serverMsg.Payload = &pb.ServerMessage_Thought{Thought: &pb.Thought{Content: p.Thought.Content}}
+	case *ipb.Event_LlmResponse:
+		serverMsg.Payload = &pb.ServerMessage_Text{Text: &pb.TextOutput{Content: p.LlmResponse.Content}}
+	case *ipb.Event_Error:
+		serverMsg.Payload = &pb.ServerMessage_Error{Error: &pb.Error{Code: "INTERNAL", Message: p.Error.Message}}
+	case *ipb.Event_FinalAnswer:
+		serverMsg.Payload = &pb.ServerMessage_FinalAnswer{FinalAnswer: &pb.FinalAnswer{Content: p.FinalAnswer.Content}}
+	case *ipb.Event_ToolCall:
+		serverMsg.Payload = &pb.ServerMessage_ToolCall{ToolCall: &pb.ToolCall{
+			ToolName:  p.ToolCall.Name,
+			InputJson: p.ToolCall.Input,
+			CallId:    p.ToolCall.CallId,
+		}}
+	case *ipb.Event_ToolResult:
+		serverMsg.Payload = &pb.ServerMessage_ToolResult{ToolResult: &pb.ToolResult{
+			CallId:  p.ToolResult.CallId,
+			Output:  p.ToolResult.Output,
+			IsError: p.ToolResult.IsError,
+		}}
+	case *ipb.Event_Observation:
+		serverMsg.Payload = &pb.ServerMessage_Observation{Observation: &pb.Observation{Content: p.Observation.Content}}
+	}
+	return serverMsg
+}
+
 func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 	var agentID string
 	var subStarted bool
+	var wg sync.WaitGroup
+	ctx := stream.Context()
 
 	errChan := make(chan error, 1)
 	sendChan := make(chan *pb.ServerMessage, 10)
 
 	// Single sender goroutine to ensure thread-safety
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
-			case <-stream.Context().Done():
+			case <-ctx.Done():
 				return
-			case msg := <-sendChan:
+			case msg, ok := <-sendChan:
+				if !ok {
+					return
+				}
 				if err := stream.Send(msg); err != nil {
-					errChan <- err
+					select {
+					case errChan <- err:
+					default:
+					}
 					return
 				}
 			}
@@ -158,56 +212,37 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 			return
 		}
 		subStarted = true
+		wg.Add(1)
 		go func() {
-			err := a.store.SubscribeEvents(stream.Context(), aid, func(event *ipb.Event) {
-				serverMsg := &pb.ServerMessage{
-					AgentId:    aid,
-					SequenceId: int64(event.Sequence),
-					Timestamp:  event.Timestamp,
-				}
+			defer wg.Done()
+			err := a.store.SubscribeEvents(ctx, aid, func(event *ipb.Event) {
+				serverMsg := eventToServiceMessage(aid, event)
 
-				switch p := event.Payload.(type) {
-				case *ipb.Event_Thought:
-					serverMsg.Payload = &pb.ServerMessage_Thought{Thought: &pb.Thought{Content: p.Thought.Content}}
-				case *ipb.Event_LlmResponse:
-					serverMsg.Payload = &pb.ServerMessage_Text{Text: &pb.TextOutput{Content: p.LlmResponse.Content}}
-				case *ipb.Event_Error:
-					serverMsg.Payload = &pb.ServerMessage_Error{Error: &pb.Error{Code: "INTERNAL", Message: p.Error.Message}}
-				case *ipb.Event_FinalAnswer:
-					serverMsg.Payload = &pb.ServerMessage_FinalAnswer{FinalAnswer: &pb.FinalAnswer{Content: p.FinalAnswer.Content}}
-				case *ipb.Event_ToolCall:
-					serverMsg.Payload = &pb.ServerMessage_ToolCall{ToolCall: &pb.ToolCall{
-						ToolName:  p.ToolCall.Name,
-						InputJson: p.ToolCall.Input,
-						CallId:    p.ToolCall.CallId,
-					}}
-				case *ipb.Event_ToolResult:
-					serverMsg.Payload = &pb.ServerMessage_ToolResult{ToolResult: &pb.ToolResult{
-						CallId:  p.ToolResult.CallId,
-						Output:  p.ToolResult.Output,
-						IsError: p.ToolResult.IsError,
-					}}
-				case *ipb.Event_Observation:
-					serverMsg.Payload = &pb.ServerMessage_Observation{Observation: &pb.Observation{Content: p.Observation.Content}}
+				select {
+				case sendChan <- serverMsg:
+				case <-ctx.Done():
 				}
-
-				sendChan <- serverMsg
 			})
 			if err != nil && err != context.Canceled {
-				log.Printf("Subscription error for %s: %v", aid, err)
+				a.logger.Error("Subscription error", "agent_id", aid, "error", err)
 			}
 		}()
 	}
 
 	// Receiver loop
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
 				if err == io.EOF {
 					return
 				}
-				errChan <- err
+				select {
+				case errChan <- err:
+				default:
+				}
 				return
 			}
 
@@ -217,9 +252,12 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 			agentID = msg.AgentId
 			startSub(agentID)
 
-			seq, err := a.store.GetNextSequence(stream.Context(), agentID)
+			seq, err := a.store.GetNextSequence(ctx, agentID)
 			if err != nil {
-				errChan <- status.Errorf(codes.Internal, "failed to get next sequence: %v", err)
+				select {
+				case errChan <- status.Errorf(codes.Internal, "failed to get next sequence: %v", err):
+				default:
+				}
 				return
 			}
 
@@ -236,7 +274,7 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 					},
 				}
 			case *pb.ClientMessage_Pause:
-				a.SetAgentStatus(stream.Context(), &pb.SetAgentStatusRequest{AgentId: agentID, Status: "paused"})
+				a.store.UpdateStatus(ctx, agentID, "paused")
 				event = &ipb.Event{
 					Sequence:  seq,
 					Timestamp: timestamppb.Now(),
@@ -245,7 +283,7 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 					},
 				}
 			case *pb.ClientMessage_Resume:
-				a.SetAgentStatus(stream.Context(), &pb.SetAgentStatusRequest{AgentId: agentID, Status: "waiting_for_step"})
+				a.store.UpdateStatus(ctx, agentID, "waiting_for_step")
 				event = &ipb.Event{
 					Sequence:  seq,
 					Timestamp: timestamppb.Now(),
@@ -265,33 +303,36 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 					},
 				}
 			case *pb.ClientMessage_Cancel:
-				a.SetAgentStatus(stream.Context(), &pb.SetAgentStatusRequest{AgentId: agentID, Status: "canceled"})
-				errChan <- nil
+				a.store.UpdateStatus(ctx, agentID, "canceled")
 				return
 			default:
 				continue
 			}
 
-			if err := a.store.AppendEvent(stream.Context(), agentID, event); err != nil {
-				errChan <- status.Errorf(codes.Internal, "failed to append event: %v", err)
+			if err := a.store.AppendEvent(ctx, agentID, event); err != nil {
+				select {
+				case errChan <- status.Errorf(codes.Internal, "failed to append event: %v", err):
+				default:
+				}
 				return
 			}
 
-			if meta, err := a.store.GetMetadata(stream.Context(), agentID); err == nil {
+			if meta, err := a.store.GetMetadata(ctx, agentID); err == nil {
 				meta.HeadSequence = seq
 				meta.UpdatedAt = timestamppb.Now()
-				a.store.SetMetadata(stream.Context(), agentID, meta)
+				a.store.SetMetadata(ctx, agentID, meta)
 			}
 
-			if _, err := a.SetAgentStatus(stream.Context(), &pb.SetAgentStatusRequest{
-				AgentId: agentID,
-				Status:  "waiting_for_step",
-			}); err != nil {
-				errChan <- status.Errorf(codes.Internal, "failed to update status: %v", err)
+			if err := a.store.UpdateStatus(ctx, agentID, "waiting_for_step"); err != nil {
+				select {
+				case errChan <- status.Errorf(codes.Internal, "failed to update status: %v", err):
+				default:
+				}
 				return
 			}
 
-			sendChan <- &pb.ServerMessage{
+			select {
+			case sendChan <- &pb.ServerMessage{
 				AgentId:   agentID,
 				Timestamp: timestamppb.Now(),
 				Payload: &pb.ServerMessage_Status{
@@ -300,16 +341,24 @@ func (a *Agent) Chat(stream pb.AgentService_ChatServer) error {
 						Message: "Message received and queued for processing",
 					},
 				},
+			}:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
+	var returnErr error
 	select {
-	case <-stream.Context().Done():
-		return stream.Context().Err()
+	case <-ctx.Done():
+		returnErr = ctx.Err()
 	case err := <-errChan:
-		return err
+		returnErr = err
 	}
+
+	close(sendChan)
+	wg.Wait()
+	return returnErr
 }
 
 func (a *Agent) SetAgentStatus(ctx context.Context, req *pb.SetAgentStatusRequest) (*pb.SetAgentStatusResponse, error) {
@@ -346,15 +395,11 @@ func (a *Agent) ControlAgent(ctx context.Context, req *pb.ControlAgentRequest) (
 		return nil, status.Error(codes.InvalidArgument, "unknown control command")
 	}
 
-	res, err := a.SetAgentStatus(ctx, &pb.SetAgentStatusRequest{
-		AgentId: req.AgentId,
-		Status:  newStatus,
-	})
-	if err != nil {
+	if err := a.store.UpdateStatus(ctx, req.AgentId, newStatus); err != nil {
 		return nil, err
 	}
 
-	return &pb.ControlAgentResponse{Status: res.Status}, nil
+	return &pb.ControlAgentResponse{Status: newStatus}, nil
 }
 
 func (a *Agent) Replay(req *pb.ReplayRequest, stream pb.AgentService_ReplayServer) error {
@@ -368,35 +413,7 @@ func (a *Agent) Replay(req *pb.ReplayRequest, stream pb.AgentService_ReplayServe
 	}
 
 	for _, event := range events {
-		serverMsg := &pb.ServerMessage{
-			AgentId:    req.AgentId,
-			SequenceId: int64(event.Sequence),
-			Timestamp:  event.Timestamp,
-		}
-
-		switch p := event.Payload.(type) {
-		case *ipb.Event_UserMessage:
-			serverMsg.Payload = &pb.ServerMessage_Status{
-				Status: &pb.StatusUpdate{Status: "user_input", Message: p.UserMessage.Content},
-			}
-		case *ipb.Event_Thought:
-			serverMsg.Payload = &pb.ServerMessage_Thought{
-				Thought: &pb.Thought{Content: p.Thought.Content},
-			}
-		case *ipb.Event_LlmResponse:
-			serverMsg.Payload = &pb.ServerMessage_Text{
-				Text: &pb.TextOutput{Content: p.LlmResponse.Content},
-			}
-		case *ipb.Event_Error:
-			serverMsg.Payload = &pb.ServerMessage_Error{
-				Error: &pb.Error{Code: "INTERNAL", Message: p.Error.Message},
-			}
-		case *ipb.Event_FinalAnswer:
-			serverMsg.Payload = &pb.ServerMessage_FinalAnswer{
-				FinalAnswer: &pb.FinalAnswer{Content: p.FinalAnswer.Content},
-			}
-		}
-
+		serverMsg := eventToServiceMessage(req.AgentId, event)
 		if err := stream.Send(serverMsg); err != nil {
 			return err
 		}

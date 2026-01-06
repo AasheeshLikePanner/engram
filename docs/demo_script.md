@@ -16,23 +16,32 @@ This demo is designed to show **Engram's** unique "indestructibility" and its se
 
 ## Part 2: Running the Engine (Visual)
 **Step 1:** Show a clean `docker-compose.yaml`.
-**Step 2:** Run `docker-compose up`.
+**Step 2:** Run the engine (Terminal 1):
+```bash
+docker-compose up --build
+```
 **Spoken:** *"Engram runs on Go and Redis. It's event-sourced, meaning every thought is an immutable event in a log. It starts in milliseconds."*
 
 ---
 
 ## Part 3: The "Deep Thought" Crash test (Visual)
-**Step 1:** Start a Python script that asks the agent a multi-part question (e.g., "Tell me a long story about a robot named Engram, but pause every few sentences for me to say 'Continue'.").
-**Step 2:** While the agent is responding, **KILL THE DOCKER CONTAINER** (Ctrl+C or `docker stop`).
-**Step 3:** The Python script will hang/error. This is the "Oh Sh*t" moment.
-**Step 4:** Restart the engine: `docker-compose up`.
+**Step 1:** Start the durable agent (Terminal 2):
+```bash
+python3 demo/agent.py
+```
+**Step 2:** While the agent is responding, **KILL THE DOCKER CONTAINER** (Ctrl+C in Terminal 1).
+**Step 3:** The Python script will show `⚠️ CONNECTION LOST`. This is the "Oh Sh*t" moment.
+**Step 4:** Restart the engine (Terminal 1):
+```bash
+docker-compose up
+```
 
 **Spoken:** *"Now, watch this. I'm killing the engine right in the middle of the agent's response. In any other framework, this agent is dead. But in Engram, we just restart the container. No data loss, no state loss."*
 
 ---
 
 ## Part 4: The Recovery (Visual)
-**Step 1:** Run the Python script again or resume the stream.
+**Step 1:** Watch Terminal 2. The Python script **automatically reconnects**.
 **Step 2:** The agent will **resume exactly where it left off**, finishing the sentence it was in the middle of.
 
 **Spoken:** *"Notice how the agent didn't ask 'Where was I?'. It replayed its historical 'soul' from the Redis log and simply continued the story. This is zero-overhead, nanosecond-precision recovery."*

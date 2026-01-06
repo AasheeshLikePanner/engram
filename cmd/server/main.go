@@ -6,28 +6,36 @@ import (
 	"engram/internal/server"
 	"engram/internal/store"
 	pb "engram/proto/v1"
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
 func main() {
+	if err := run(); err != nil {
+		slog.Error("Application failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg := config.Load()
 
 	var s store.DurableStore
 	var err error
 
 	if cfg.StoreType == "redis" {
-		log.Printf("Initializing Redis store at %s", cfg.RedisURL)
+		slog.Info("Initializing Redis store", "url", cfg.RedisURL)
 		s, err = store.NewRedisStore(cfg.RedisURL)
 	} else {
-		log.Printf("Initializing Badger store at %s", cfg.DBPath)
+		slog.Info("Initializing Badger store", "path", cfg.DBPath)
 		s, err = store.NewBadgerStore(cfg.DBPath)
 	}
 
 	if err != nil {
-		log.Fatalf("failed to initialize store: %v", err)
+		return fmt.Errorf("failed to initialize store: %w", err)
 	}
 	defer s.Close()
 
@@ -35,25 +43,33 @@ func main() {
 	agentSvc := agent.NewAgent(s)
 
 	// Initialize Server
-	srv, err := server.NewServer(cfg.GRPCPort)
+	srv, err := server.NewServer(cfg.GRPCPort, cfg.APIKey)
 	if err != nil {
-		log.Fatalf("failed to initialize server: %v", err)
+		return fmt.Errorf("failed to initialize server: %w", err)
 	}
 
 	// Register Service
 	pb.RegisterAgentServiceServer(srv.GrpcServer, agentSvc)
 
 	// Graceful Shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	errChan := make(chan error, 1)
 	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-		<-sigChan
-		log.Println("Shutting down server...")
-		srv.Stop()
+		slog.Info("Starting gRPC server", "port", cfg.GRPCPort)
+		if err := srv.Serve(); err != nil {
+			errChan <- err
+		}
 	}()
 
-	log.Printf("Starting gRPC server on :%d", cfg.GRPCPort)
-	if err := srv.Serve(); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+	select {
+	case sig := <-sigChan:
+		slog.Info("Received signal, shutting down", "signal", sig)
+		srv.Stop()
+	case err := <-errChan:
+		return fmt.Errorf("server error: %w", err)
 	}
+
+	return nil
 }

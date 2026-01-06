@@ -1,63 +1,67 @@
-import time
-import grpc
 import sys
-from engram.v1 import agent_pb2, agent_pb2_grpc
+import os
+import time
+from engram import EngramClient
 
-def run_demo():
-    print("🚀 Connecting to Engram Engine (localhost:50051)...")
+def interactive_demo():
+    print("="*50)
+    print("      ENGRAM: Durable AI Agent Engine Demo")
+    print("="*50)
+    
+    # 1. Setup
+    api_key = os.getenv("API_KEY", "secret-token")
+    target = os.getenv("ENGINE_URL", "localhost:50051")
+    client = EngramClient(target=target, api_key=api_key)
+    
     try:
-        channel = grpc.insecure_channel('localhost:50051')
-        stub = agent_pb2_grpc.AgentServiceStub(channel)
+        # 2. Agent Configuration
+        print("\n[1/3] Initializing Agent...")
+        goal = "You are a helpful research assistant with access to a clock tool."
+        model = "llama-3.3-70b-versatile"
         
-        # 1. Create the persistent agent
-        print("\n🧠 Creating a durable agent...")
-        resp = stub.CreateAgent(agent_pb2.CreateAgentRequest(
-            goal="Tell a long, detailed science fiction story. Use the [CLOCK_TOOL] occasionally.",
-            model="llama3.1:8b" # Change to your local model
-        ))
-        agent_id = resp.agent_id
-        print(f"✅ Agent created: {agent_id}")
-        
-        # 2. Interactive Stream
-        print("\n📖 Starting the story stream. KILL THE ENGINE (docker-compose down) at any time!")
-        print("-" * 50)
-        
-        def send_message():
-            yield agent_pb2.ClientMessage(
-                agent_id=agent_id,
-                user_input=agent_pb2.UserInput(content="Start your story now. Make it long and stop for breath occasionally.")
-            )
+        agent = client.create_agent(goal=goal, model=model)
+        agent_id = agent.agent_id
+        print(f"✨ Agent '{agent_id}' is now live and durable.")
 
+        # 3. Interactive Loop
+        print("\n[2/3] Entering Interactive Mode (type 'exit' to quit)")
         while True:
-            try:
-                for response in stub.Chat(send_message()):
-                    if response.HasField('text'):
-                        # Print with a slight delay to make it readable in the video
-                        for char in response.text.content:
-                            sys.stdout.write(char)
-                            sys.stdout.flush()
-                            time.sleep(0.01) 
-                    elif response.HasField('tool_call'):
-                        print(f"\n\n🛠️  [TOOL_CALL] Executing: {response.tool_call.name}")
-                        print(f"📦 Args: {response.tool_call.arguments}")
-                
-                print("\n\n✅ Stream finished naturally.")
+            user_input = input("\n👤 You: ")
+            if user_input.lower() in ['exit', 'quit']:
                 break
-            except grpc.RpcError as e:
-                print(f"\n\n⚠️  CONNECTION LOST: {e.code()}")
-                print("🔄 Waiting for engine to restart... (Run 'docker-compose up' now!)")
-                while True:
-                    try:
-                        time.sleep(2)
-                        # Heartbeat check
-                        stub.GetAgent(agent_pb2.GetAgentRequest(agent_id=agent_id))
-                        print("✨ Engine is back! Resuming soul recovery...")
-                        break
-                    except:
-                        pass
 
+            print("\n🤖 Assistant is thinking...")
+            responses = client.chat(agent_id, user_input)
+            
+            for msg in responses:
+                if msg.HasField('thought'):
+                    # Using dim/grey style for thoughts if possible, otherwise plain
+                    print(f"  💭 {msg.thought.content}")
+                
+                elif msg.HasField('tool_call'):
+                    print(f"  🛠️  Executing tool: {msg.tool_call.tool_name}...")
+                
+                elif msg.HasField('tool_result'):
+                    print(f"  📦 Tool returned: {msg.tool_result.output}")
+                
+                elif msg.HasField('text'):
+                    print(f"\n🤖: {msg.text.content}")
+                
+                elif msg.HasField('error'):
+                    print(f"\n❌ System Error: {msg.error.message}")
+
+        # 4. Persistence Showcase
+        print("\n[3/3] Persistence Check...")
+        print("Even if the connection closed, the agent's state is safe in the store.")
+        agents = client.list_agents()
+        print(f"Total agents in store: {len(agents)}")
+        
+    except KeyboardInterrupt:
+        print("\n\nGoodbye!")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"\n💥 Demo Error: {e}")
+    finally:
+        client.close()
 
 if __name__ == "__main__":
-    run_demo()
+    interactive_demo()

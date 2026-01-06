@@ -21,6 +21,7 @@ type MetadataStore interface {
 	DeleteAgent(ctx context.Context, agentID string) error
 	AtomicClaim(ctx context.Context, agentID, workerID string) (*ipb.AgentMetadata, error)
 	UpdateStatus(ctx context.Context, agentID, status string) error
+	ListPendingAgents(ctx context.Context) ([]string, error)
 }
 
 type IdempotencyStore interface {

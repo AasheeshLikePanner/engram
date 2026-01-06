@@ -6,22 +6,30 @@ import (
 )
 
 type Config struct {
-	DBPath    string
-	GRPCPort  int
-	OllamaURL string
-	RedisURL  string
-	StoreType string // "badger" or "redis"
-	ToolsPath string
+	DBPath      string
+	GRPCPort    int
+	OllamaURL   string
+	RedisURL    string
+	StoreType   string // "badger" or "redis"
+	ToolsPath   string
+	APIKey      string
+	LLMProvider string // "ollama" or "openai"
+	LLMAPIKey   string
+	LLMBaseURL  string
 }
 
 func Load() *Config {
 	return &Config{
-		DBPath:    getEnv("DB_PATH", "./data"),
-		GRPCPort:  getEnvAsInt("GRPC_PORT", 50051),
-		OllamaURL: getEnv("OLLAMA_URL", "http://localhost:11434"),
-		RedisURL:  getEnv("REDIS_URL", "localhost:6379"),
-		StoreType: getEnv("STORE_TYPE", "badger"),
-		ToolsPath: getEnv("TOOLS_PATH", "./tools"),
+		DBPath:      getEnv("DB_PATH", "./data"),
+		GRPCPort:    getEnvAsInt("GRPC_PORT", 50051),
+		OllamaURL:   getEnv("OLLAMA_URL", "http://localhost:11434"),
+		RedisURL:    getEnv("REDIS_URL", "localhost:6379"),
+		StoreType:   getEnv("STORE_TYPE", "badger"),
+		ToolsPath:   getEnv("TOOLS_PATH", "./tools"),
+		APIKey:      getEnv("API_KEY", ""),
+		LLMProvider: getEnv("LLM_PROVIDER", "ollama"),
+		LLMAPIKey:   getEnv("LLM_API_KEY", ""),
+		LLMBaseURL:  getEnv("LLM_BASE_URL", "https://api.openai.com/v1"),
 	}
 }
 

@@ -133,7 +133,16 @@ func (r *RedisStore) SetMetadata(ctx context.Context, agentID string, meta *ipb.
 		return err
 	}
 
-	return r.client.Set(ctx, r.metaKey(agentID), data, 0).Err()
+	pipe := r.client.Pipeline()
+	pipe.Set(ctx, r.metaKey(agentID), data, 0)
+	if meta.Status == "waiting_for_step" {
+		pipe.SAdd(ctx, "agents:pending", agentID)
+	} else {
+		pipe.SRem(ctx, "agents:pending", agentID)
+	}
+
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 func (r *RedisStore) GetAgent(ctx context.Context, agentID string) (*pb.Agent, error) {
@@ -203,6 +212,7 @@ func (r *RedisStore) AtomicClaim(ctx context.Context, agentID, workerID string) 
 
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, key, newData, 0)
+			pipe.SRem(ctx, "agents:pending", agentID)
 			return nil
 		})
 
@@ -234,7 +244,25 @@ func (r *RedisStore) UpdateStatus(ctx context.Context, agentID, status string) e
 		meta.RunningOnWorker = ""
 	}
 
-	return r.SetMetadata(ctx, agentID, meta)
+	pipe := r.client.Pipeline()
+	if status == "waiting_for_step" {
+		pipe.SAdd(ctx, "agents:pending", agentID)
+	} else {
+		pipe.SRem(ctx, "agents:pending", agentID)
+	}
+
+	data, err := proto.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	pipe.Set(ctx, r.metaKey(agentID), data, 0)
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (r *RedisStore) ListPendingAgents(ctx context.Context) ([]string, error) {
+	return r.client.SMembers(ctx, "agents:pending").Result()
 }
 
 // === IdempotencyStore ===

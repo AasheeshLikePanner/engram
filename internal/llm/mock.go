@@ -29,16 +29,16 @@ func (m *MockLLM) Generate(ctx context.Context, model string, events []*ipb.Even
 		}
 	}
 
-	if strings.Contains(lastUserMsg, "What time did I say") {
-		return fmt.Sprintf("You said: '%s'. The engine shows events happened then, but replayed now.", saidTime), nil
+	if strings.Contains(lastUserMsg, "What time is it") && !hasIntervention {
+		return "[TOOL_CALL:clock:{}] Checking the time now.", nil
 	}
 
-	if strings.Contains(lastUserMsg, "[CLOCK_TOOL]") && !hasIntervention {
-		return "[TOOL_CALL:clock:{}] I need to check the time.", nil
+	if strings.Contains(lastUserMsg, "What time did I say") {
+		return fmt.Sprintf("You said: '%s'.", saidTime), nil
 	}
 
 	if hasIntervention {
-		return "I see the system intervention. Based on the tool result and the edit, the answer is 4.", nil
+		return "The current time is 12:00 PM according to the clock tool.", nil
 	}
 
 	return "Hello! I am a durable AI agent. How can I help you?", nil

@@ -163,6 +163,11 @@ func (s *BadgerStore) SetMetadata(ctx context.Context, agentID string, meta *ipb
 	}
 
 	return s.db.Update(func(txn *badger.Txn) error {
+		if meta.Status == "waiting_for_step" {
+			txn.Set([]byte(s.pendingKey(agentID)), []byte("1"))
+		} else {
+			txn.Delete([]byte(s.pendingKey(agentID)))
+		}
 		return txn.Set([]byte(key), data)
 	})
 }
@@ -219,6 +224,10 @@ func (s *BadgerStore) DeleteAgent(ctx context.Context, agentID string) error {
 	})
 }
 
+func (s *BadgerStore) pendingKey(agentID string) string {
+	return fmt.Sprintf("pending:v1:%s", agentID)
+}
+
 func (s *BadgerStore) AtomicClaim(ctx context.Context, agentID, workerID string) (*ipb.AgentMetadata, error) {
 	key := []byte(s.metaKey(agentID))
 	var claimedMeta *ipb.AgentMetadata
@@ -251,6 +260,9 @@ func (s *BadgerStore) AtomicClaim(ctx context.Context, agentID, workerID string)
 			return err
 		}
 
+		// Remove from pending set
+		txn.Delete([]byte(s.pendingKey(agentID)))
+
 		claimedMeta = meta
 		return txn.Set(key, data)
 	})
@@ -259,17 +271,64 @@ func (s *BadgerStore) AtomicClaim(ctx context.Context, agentID, workerID string)
 }
 
 func (s *BadgerStore) UpdateStatus(ctx context.Context, agentID, status string) error {
-	meta, err := s.GetMetadata(ctx, agentID)
-	if err != nil {
-		return err
-	}
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := []byte(s.metaKey(agentID))
+		item, err := txn.Get(key)
+		if err != nil {
+			return err
+		}
 
-	meta.Status = status
-	if status != "processing" {
-		meta.RunningOnWorker = ""
-	}
+		meta := &ipb.AgentMetadata{}
+		err = item.Value(func(val []byte) error {
+			return proto.Unmarshal(val, meta)
+		})
+		if err != nil {
+			return err
+		}
 
-	return s.SetMetadata(ctx, agentID, meta)
+		meta.Status = status
+		if status != "processing" {
+			meta.RunningOnWorker = ""
+		}
+		meta.UpdatedAt = timestamppb.Now()
+
+		data, err := proto.Marshal(meta)
+		if err != nil {
+			return err
+		}
+
+		if status == "waiting_for_step" {
+			txn.Set([]byte(s.pendingKey(agentID)), []byte("1"))
+		} else {
+			txn.Delete([]byte(s.pendingKey(agentID)))
+		}
+
+		return txn.Set(key, data)
+	})
+}
+
+func (s *BadgerStore) ListPendingAgents(ctx context.Context) ([]string, error) {
+	var ids []string
+	prefix := []byte("pending:v1:")
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			key := string(it.Item().Key())
+			parts := strings.Split(key, ":")
+			if len(parts) >= 3 {
+				ids = append(ids, parts[2])
+			}
+		}
+		return nil
+	})
+
+	return ids, err
 }
 
 // === IdempotencyStore ===
